@@ -19,6 +19,7 @@ from setup_wizard.texture_import_setup.texture_importer_types import TextureImpo
 from setup_wizard.domain.shader_material_name_keywords import ShaderMaterialNameKeywords
 from setup_wizard.utils.genshin_body_part_deducer import get_monster_body_part_name, \
     get_npc_mesh_body_part_name
+from setup_wizard.utils.mmd_utils import match_mmd_body_part_name
 
 class GameDefaultMaterialReplacer(ABC):
     @abstractmethod
@@ -80,7 +81,7 @@ class GenshinImpactDefaultMaterialReplacer(GameDefaultMaterialReplacer):
                     mesh_body_part_name = get_monster_body_part_name(material_name)
                     character_type = TextureImporterType.MONSTER
                 else:
-                    mesh_body_part_name = material_name.split('_')[-1]
+                    mesh_body_part_name = match_mmd_body_part_name(material_name) or material_name.split('_')[-1]
                     character_type = TextureImporterType.AVATAR
 
                 if material_name.startswith(ShaderMaterialNameKeywords.SKILLOBJ) and material_name.endswith('Glass_Mat'):
@@ -400,6 +401,10 @@ class HonkaiStarRailDefaultMaterialReplacer(GameDefaultMaterialReplacer):
         self.blender_operator.report({'INFO'}, 'Replaced default materials with Genshin shader materials...')
 
     def find_body_part_name(self, material_name):
+        mmd_body_part_name = match_mmd_body_part_name(material_name)
+        if mmd_body_part_name:
+            return mmd_body_part_name
+
         expected_format_body_part_name = self.__expected_format_body_part_name_search(material_name)
         naive_search_body_part_name = self.__naive_body_part_name_search(material_name)
         body_part_name = ''
@@ -567,6 +572,10 @@ class PunishingGrayRavenDefaultMaterialReplacer(GameDefaultMaterialReplacer):
         self.blender_operator.report({'INFO'}, 'Replaced default materials with Genshin shader materials...')
 
     def find_body_part_name(self, material_name):
+        mmd_body_part_name = match_mmd_body_part_name(material_name)
+        if mmd_body_part_name:
+            return mmd_body_part_name
+
         expected_format_body_part_name = self.__expected_format_body_part_name_search(material_name)
         naive_search_body_part_name = self.__naive_body_part_name_search(material_name)
         body_part_name = ''

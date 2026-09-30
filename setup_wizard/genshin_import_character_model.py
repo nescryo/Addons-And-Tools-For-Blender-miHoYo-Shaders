@@ -9,7 +9,7 @@ import pathlib
 # ImportHelper is a helper class, defines filename and
 # invoke() function which calls the file selector.
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, StringProperty
 from bpy.types import Operator
 import os
 
@@ -18,6 +18,7 @@ from setup_wizard.import_order import NextStepInvoker, cache_using_cache_key
 from setup_wizard.import_order import get_cache, CHARACTER_MODEL_FOLDER_FILE_PATH
 from setup_wizard.setup_wizard_operator_base_classes import BasicSetupUIOperator, CustomOperatorProperties
 from setup_wizard.utils import material_utils
+from setup_wizard.utils.mmd_utils import is_mmd_filepath, is_mmd_object
 
 
 SHADER_COLOR_ATTRIBUTE_NAME = 'Col'
@@ -62,11 +63,21 @@ class GI_OT_GenshinImportModel(Operator, ImportHelper, CustomOperatorProperties)
         default=True,
     )
 
+    mmd_scale: FloatProperty(
+        name="MMD Import Scale",
+        description="Scale when importing MMD model (.pmx/.pmd). Default 0.08 converts MMD units to Blender metric scale",
+        default=0.08,
+        min=0.0001,
+        max=100.0,
+    )
+
     def draw(self, context):
         layout = self.layout
         box = layout.box()
-        box.label(text="BetterFBX Bone Options:")
+        box.label(text="FBX Options:")
         box.prop(self, 'use_auto_bone_orientation')
+        box.label(text="MMD Options:")
+        box.prop(self, 'mmd_scale')
 
     def execute(self, context):
         self.clean_up_scene()
@@ -132,31 +143,47 @@ class GI_OT_GenshinImportModel(Operator, ImportHelper, CustomOperatorProperties)
 
     def import_character_model(self, character_model_file_path_or_directory, is_character_model_file):
         character_model_file_path = character_model_file_path_or_directory if is_character_model_file else \
-            self.__find_fbx_file(character_model_file_path_or_directory)
-        betterfbx_installed = bpy.context.preferences.addons.get('better_fbx')
-        # Honkai Star Rail requires BetterFBX. We should always use it for HSR Character Import
-        betterfbx_enabled = True if self.game_type == GameType.HONKAI_STAR_RAIL.name else \
-            bpy.context.window_manager.setup_wizard_betterfbx_enabled if betterfbx_installed else False
+            self.__find_model_file(character_model_file_path_or_directory)
+        
+        if not character_model_file_path or not os.path.exists(character_model_file_path):
+            self.report({'ERROR'}, f'No valid model file (.pmx, .pmd, .fbx) found in: {character_model_file_path_or_directory}')
+            raise FileNotFoundError(f'Model file not found: {character_model_file_path_or_directory}')
 
-        if betterfbx_installed and betterfbx_enabled:
-            betterfbx_kwargs = {
-                'filepath': character_model_file_path,
-                'files': [{'name': os.path.basename(character_model_file_path)}],  # needed after upgrading BetterFBX to 6.3
-                'use_auto_bone_orientation': self.use_auto_bone_orientation,
-            }
-            # use_single_armature only exists in at least BetterFBX >= 6.3.3 (unsure when it was exactly introduced)
-            # keep imported model in the same format as when using BetterFBX 5.4.8
-            if bpy.ops.better_import.fbx.get_rna_type().properties.get('use_single_armature'):
-                betterfbx_kwargs['use_single_armature'] = False
-            bpy.ops.better_import.fbx('EXEC_DEFAULT', **betterfbx_kwargs)
-            self.report({'INFO'}, 'Imported character model using BetterFBX')
+        if is_mmd_filepath(character_model_file_path):
+            if hasattr(bpy.ops, 'mmd_tools') and hasattr(bpy.ops.mmd_tools, 'import_model'):
+                bpy.ops.mmd_tools.import_model(
+                    filepath=character_model_file_path,
+                    scale=self.mmd_scale,
+                    clean_model=False,
+                )
+                self.report({'INFO'}, f'Imported MMD model: {os.path.basename(character_model_file_path)}')
+            else:
+                self.report({'ERROR'}, 'mmd_tools addon is required to import .pmx/.pmd models! Please enable mmd_tools.')
+                raise RuntimeError('mmd_tools is not installed or enabled in Blender')
         else:
-            bpy.ops.import_scene.fbx(
-                filepath=character_model_file_path,
-                force_connect_children=True,
-                automatic_bone_orientation=True
-            )
-            self.report({'INFO'}, 'Imported character model')
+            betterfbx_installed = bpy.context.preferences.addons.get('better_fbx')
+            betterfbx_enabled = True if self.game_type == GameType.HONKAI_STAR_RAIL.name else \
+                bpy.context.window_manager.setup_wizard_betterfbx_enabled if betterfbx_installed else False
+
+            if betterfbx_installed and betterfbx_enabled:
+                betterfbx_kwargs = {
+                    'filepath': character_model_file_path,
+                    'files': [{'name': os.path.basename(character_model_file_path)}],  # needed after upgrading BetterFBX to 6.3
+                    'use_auto_bone_orientation': self.use_auto_bone_orientation,
+                }
+                # use_single_armature only exists in at least BetterFBX >= 6.3.3 (unsure when it was exactly introduced)
+                # keep imported model in the same format as when using BetterFBX 5.4.8
+                if bpy.ops.better_import.fbx.get_rna_type().properties.get('use_single_armature'):
+                    betterfbx_kwargs['use_single_armature'] = False
+                bpy.ops.better_import.fbx('EXEC_DEFAULT', **betterfbx_kwargs)
+                self.report({'INFO'}, 'Imported character model using BetterFBX')
+            else:
+                bpy.ops.import_scene.fbx(
+                    filepath=character_model_file_path,
+                    force_connect_children=True,
+                    automatic_bone_orientation=True
+                )
+                self.report({'INFO'}, 'Imported character model')
 
         for object in bpy.data.objects:
             if object.type == 'MESH' and not object.data.uv_layers.get('UV1'):
@@ -169,16 +196,23 @@ class GI_OT_GenshinImportModel(Operator, ImportHelper, CustomOperatorProperties)
                 bpy.data.objects[object.name].hide_render = True
 
     def reset_pose_location_and_rotation(self):
-        try:
-            armature = [object for object in bpy.data.objects if object.type == 'ARMATURE'][0]  # expecting 1 armature
-        except IndexError as err:
+        armatures = [object for object in bpy.data.objects if object.type == 'ARMATURE']
+        if not armatures:
             self.report(
                 {'ERROR'}, 
-                'Attempted to import model, but no armature found after import. Likely failed to import from FBX file.\n'
-                '- Try again with BetterFBX disabled.\n'
-                "- Try renaming and removing any special characters (like star symbols) from any folders in the filepath"
+                'Attempted to import model, but no armature found after import.\n'
+                '- For FBX: Try again with BetterFBX disabled or check for special characters.\n'
+                '- For MMD: Check if mmd_tools generated an armature.'
             )
-            raise err
+            raise RuntimeError('No armature found after import')
+        
+        # Select armature with meshes or active
+        armature = armatures[0]
+        for arm in armatures:
+            if any(child.type == 'MESH' for child in arm.children):
+                armature = arm
+                break
+
         bpy.context.view_layer.objects.active = armature
 
         bpy.ops.object.mode_set(mode='POSE')
@@ -196,15 +230,20 @@ class GI_OT_GenshinImportModel(Operator, ImportHelper, CustomOperatorProperties)
         for mesh in meshes:
             if len(mesh.color_attributes) == 1:
                 mesh.color_attributes[0].name = name  # PGR: Named "VertexColors" and may not be the active color
-            else:
+            elif len(mesh.color_attributes) > 1:
                 if mesh.color_attributes.active_color:
                     mesh.color_attributes.active_color.name = name
 
+    def __find_model_file(self, directory):
+        for ext in ['.pmx', '.pmd', '.fbx']:
+            for root, folder, files in os.walk(directory):
+                for file_name in files:
+                    if pathlib.Path(file_name).suffix.lower() == ext:
+                        return os.path.join(root, file_name)
+        return None
+
     def __find_fbx_file(self, directory):
-        for root, folder, files in os.walk(directory):
-            for file_name in files:
-                if '.fbx' in pathlib.Path(file_name).suffix:
-                    return os.path.join(root, file_name)
+        return self.__find_model_file(directory)
 
 
 '''
@@ -213,9 +252,9 @@ class GI_OT_GenshinImportModel(Operator, ImportHelper, CustomOperatorProperties)
     That way there is no chance of deleting empties used by Festivity's shaders.
 '''
 class GI_OT_DeleteEmpties(Operator, CustomOperatorProperties):
-    '''Deletes Empties (except Head Driver's empties)'''
+    '''Deletes Empties (except Head Driver's empties and MMD physics/controller empties)'''
     bl_idname = 'genshin.delete_empties'
-    bl_label = "Genshin: Delete empties (except Head Driver's empties)"
+    bl_label = "Genshin: Delete empties (except Head Driver and MMD empties)"
 
     def execute(self, context):
         scene = bpy.context.scene
@@ -223,11 +262,14 @@ class GI_OT_DeleteEmpties(Operator, CustomOperatorProperties):
             'Head Forward',
             'Head Up'
         ]
-        for object in scene.objects:
+        for object in list(scene.objects):
             if object.type == 'EMPTY' and object.name not in empties_to_not_delete:
+                # Protect MMD objects (Rigid Bodies, Joints, Root Empty) from deletion
+                if is_mmd_object(object):
+                    continue
                 bpy.data.objects.remove(object)
 
-        self.report({'INFO'}, 'Deleted Empties')
+        self.report({'INFO'}, 'Deleted Empties (MMD controllers & physics preserved)')
         if self.next_step_idx:
             NextStepInvoker().invoke(
                 self.next_step_idx, 

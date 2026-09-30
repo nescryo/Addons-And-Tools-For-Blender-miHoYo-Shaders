@@ -5,6 +5,7 @@ from bpy.types import Operator
 
 from setup_wizard.import_order import NextStepInvoker
 from setup_wizard.setup_wizard_operator_base_classes import CustomOperatorProperties
+from setup_wizard.utils.mmd_utils import find_head_bone_name
 
 HEAD_DRIVER_OBJECT_NAME = 'Head Driver'
 HEAD_ORIGIN_OBJECT_NAME = 'Head Origin'
@@ -17,15 +18,36 @@ class GI_OT_SetUpHeadDriver(Operator, CustomOperatorProperties):
 
     def execute(self, context):
         head_driver_object = bpy.data.objects.get(HEAD_DRIVER_OBJECT_NAME) or bpy.data.objects.get(HEAD_ORIGIN_OBJECT_NAME)
-        child_of_constraint = head_driver_object.constraints[0]  # expecting 1 constraint head driver
+        if not head_driver_object or not head_driver_object.constraints:
+            self.report({'WARNING'}, f'Could not find {HEAD_DRIVER_OBJECT_NAME} or its constraints.')
+            if self.next_step_idx:
+                NextStepInvoker().invoke(
+                    self.next_step_idx, 
+                    self.invoker_type, 
+                    high_level_step_name=self.high_level_step_name,
+                    game_type=self.game_type,
+                )
+            return {'FINISHED'}
 
-        armature = [object for object in bpy.data.objects if object.type == 'ARMATURE'][0]  # expecting 1 armature
-        armature_bones = armature.data.bones
-        head_bone_names = [bone_name for bone_name in armature_bones.keys() if 'Head' in bone_name]
-        if head_bone_names:
-            head_bone_name = head_bone_names[0]  # expecting 1 Head bone
-            self.set_contraint_target_and_bone(child_of_constraint, armature, head_bone_name)
-            self.set_inverse(head_driver_object)
+        child_of_constraint = head_driver_object.constraints[0]
+
+        armatures = [object for object in bpy.data.objects if object.type == 'ARMATURE']
+        if armatures:
+            armature = armatures[0]
+            for arm in armatures:
+                if any(child.type == 'MESH' for child in arm.children):
+                    armature = arm
+                    break
+
+            head_bone_name = find_head_bone_name(armature.data.bones)
+            if head_bone_name:
+                self.set_contraint_target_and_bone(child_of_constraint, armature, head_bone_name)
+                self.set_inverse(head_driver_object)
+                self.report({'INFO'}, f'Head Driver attached to bone: {head_bone_name}')
+            else:
+                self.report({'WARNING'}, 'Could not automatically identify Head bone.')
+        else:
+            self.report({'WARNING'}, 'No armature found for Head Driver setup.')
 
         if self.next_step_idx:
             NextStepInvoker().invoke(
